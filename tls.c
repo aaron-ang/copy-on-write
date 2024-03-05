@@ -24,9 +24,9 @@
 
 typedef struct thread_local_storage {
   pthread_t tid;
-  unsigned int size;     /* size in bytes */
-  unsigned int page_num; /* number of pages */
-  struct page **pages;   /* array of pointers to pages */
+  unsigned int size;      /* size in bytes */
+  unsigned int num_pages; /* number of pages */
+  struct page **pages;    /* array of pointers to pages */
 } TLS;
 
 struct page {
@@ -40,8 +40,11 @@ ENTRY e, *ep;
  * Now that data structures are defined, here's a good place to declare any
  * global variables.
  */
+pthread_t threads[MAX_THREAD_COUNT];
 
 int num_tls = 0;
+
+unsigned int page_size;
 
 /*
  * With global data declared, this is a good point to start defining your
@@ -57,7 +60,7 @@ static void h_init() {
 
 static void hadd(pthread_t tid, TLS *tls) {
   e.key = (char *)tid;
-  e.data = (void *)tls;
+  e.data = tls;
   if (hsearch(e, ENTER) == NULL) {
     fprintf(stderr, "hadd: entry failed\n");
     exit(EXIT_FAILURE);
@@ -71,12 +74,18 @@ static TLS *hfind(pthread_t tid) {
   return (TLS *)ep->data;
 }
 
+static unsigned int get_page_size() {}
+
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
-  TLS *lsa = hfind(pthread_self());
-  unsigned int p_fault = ((unsigned int)si->si_addr) & ~(lsa->size - 1);
-  // TODO: brute force scan through all allocated TLS regions
-  // exit just the current thread if faulting page is not found
-  // pthread_exit(NULL);
+  unsigned int p_fault = ((unsigned int)si->si_addr) & ~(page_size - 1);
+  for (int i = 0; i < num_tls; i++) {
+    TLS *tls = hfind(threads[i]);
+    for (int j = 0; j < tls->num_pages; j++) {
+      if (tls->pages[j]->address == p_fault) {
+        pthread_exit(NULL);
+      }
+    }
+  }
   signal(SIGSEGV, SIG_DFL);
   signal(SIGBUS, SIG_DFL);
   raise(sig);
@@ -84,7 +93,7 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
 
 static void tls_init() {
   struct sigaction sigact;
-  // page_size = getpagesize();
+  page_size = get_page_size();
   sigemptyset(&sigact.sa_mask);
   sigact.sa_flags = SA_SIGINFO;
   sigact.sa_sigaction = tls_handle_page_fault;
@@ -93,14 +102,14 @@ static void tls_init() {
 }
 
 static void tls_protect(struct page *p) {
-  // if (mprotect((void *)p->address, ???->size, ???) != 0) {
+  // if (mprotect(p->address, ???->size, ???) != 0) {
   //   fprintf(stderr, "tls_protect: could not protect page\n");
   //   exit(EXIT_FAILURE);
   // }
 }
 
 static void tls_unprotect(struct page *p) {
-  // if (mprotect((void *) p->address, page_size, ???)) {
+  // if (mprotect(p->address, page_size, ???)) {
   //   fprintf(stderr, "tls_unprotect: could not unprotect page\n");
   //   exit(EXIT_FAILURE);
   // }
@@ -114,16 +123,26 @@ int tls_create(unsigned int size) {
   if (num_tls == 0)
     h_init();
 
-  TLS *lsa;
-  if ((lsa = hfind(pthread_self())) && lsa->size > 0)
+  pthread_t tid = pthread_self();
+  if (size == 0 || hfind(tid))
     return -1;
 
-  if (lsa == NULL) {
-    // TODO: allocate TLS
+  tls_init();
+
+  TLS *lsa = malloc(sizeof(TLS));
+  lsa->tid = tid;
+  lsa->size = size;
+  lsa->num_pages = size / page_size;
+  lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
+  for (int i = 0; i < lsa->num_pages; i++) {
+    lsa->pages[i] = malloc(sizeof(struct page));
+    lsa->pages[i]->address = (unsigned int)mmap(
+        0, page_size, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    lsa->pages[i]->ref_count = 1;
   }
 
-  hadd(pthread_self(), NULL);
-
+  hadd(tid, lsa);
+  threads[num_tls] = tid;
   num_tls++;
   return 0;
 }
@@ -133,11 +152,21 @@ int tls_destroy() {
   if ((ep = hsearch(e, FIND)) == NULL)
     return -1;
 
-  // TODO: clean up all pages
+  TLS *lsa = ep->data;
+  for (int i = 0; i < lsa->num_pages; i++) {
+    struct page *p = lsa->pages[i];
+    if (--p->ref_count == 0) {
+      munmap((void *)p->address, page_size);
+      free(p);
+    } else {
+      // TODO: handle shared page
+    }
+  }
 
-  free(ep->data);
+  free(lsa);
   ep->data = NULL;
 
+  threads[num_tls - 1] = 0;
   if (--num_tls == 0)
     hdestroy();
 
