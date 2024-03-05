@@ -60,7 +60,7 @@ static void h_init() {
   }
 }
 
-static void hadd(pthread_t tid, TLS *tls) {
+static void h_update(pthread_t tid, TLS *tls) {
   e.key = (char *)tid;
   e.data = tls;
   if (hsearch(e, ENTER) == NULL) {
@@ -69,7 +69,7 @@ static void hadd(pthread_t tid, TLS *tls) {
   }
 }
 
-static TLS *hfind(pthread_t tid) {
+static TLS *h_get(pthread_t tid) {
   e.key = (char *)tid;
   if ((ep = hsearch(e, FIND)) == NULL)
     return NULL;
@@ -84,12 +84,13 @@ static unsigned int get_page_size() {
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
   // Get base address of page where fault occurred
   unsigned int p_fault = ((unsigned int)si->si_addr) & ~(page_size - 1);
+  // Check if fault occurred in any of the threads' TLS
   for (int i = 0; i < num_tls; i++) {
     pthread_t tid = threads[i];
     if (tid == pthread_self() || tid == 0)
       continue;
 
-    TLS *tls = hfind(threads[i]);
+    TLS *tls = h_get(threads[i]);
     if (tls == NULL)
       continue;
     assert(tls->tid == threads[i]);
@@ -99,6 +100,7 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
         pthread_exit(NULL);
     }
   }
+  // If fault occurred outside of any TLS, terminate the process
   signal(SIGSEGV, SIG_DFL);
   signal(SIGBUS, SIG_DFL);
   raise(sig);
@@ -137,7 +139,7 @@ int tls_create(unsigned int size) {
     h_init();
 
   pthread_t tid = pthread_self();
-  if (size == 0 || hfind(tid))
+  if (size == 0 || h_get(tid))
     return -1;
 
   tls_init();
@@ -154,7 +156,7 @@ int tls_create(unsigned int size) {
     lsa->pages[i]->ref_count = 1;
   }
 
-  hadd(tid, lsa);
+  h_update(tid, lsa);
   threads[num_tls] = tid;
   num_tls++;
   return 0;
@@ -162,7 +164,7 @@ int tls_create(unsigned int size) {
 
 int tls_destroy() {
   pthread_t tid = pthread_self();
-  TLS *lsa = hfind(tid);
+  TLS *lsa = h_get(tid);
   if (lsa == NULL)
     return -1;
   assert(lsa->tid == tid);
@@ -192,7 +194,7 @@ int tls_destroy() {
 }
 
 int tls_read(unsigned int offset, unsigned int length, char *buffer) {
-  TLS *lsa = hfind(pthread_self());
+  TLS *lsa = h_get(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
   assert(lsa->tid == pthread_self());
@@ -213,7 +215,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 }
 
 int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
-  TLS *lsa = hfind(pthread_self());
+  TLS *lsa = h_get(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
   assert(lsa->tid == pthread_self());
@@ -230,16 +232,17 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
 }
 
 int tls_clone(pthread_t tid) {
-  if (hfind(pthread_self()))
+  pthread_t self_id = pthread_self();
+  if (h_get(self_id))
     return -1;
 
-  TLS *target = hfind(tid);
+  TLS *target = h_get(tid);
   if (target == NULL)
     return -1;
   assert(target->tid == tid);
 
   TLS *lsa = malloc(sizeof(TLS));
-  lsa->tid = pthread_self();
+  lsa->tid = self_id;
   lsa->size = target->size;
   lsa->num_pages = target->num_pages;
   lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
@@ -248,8 +251,8 @@ int tls_clone(pthread_t tid) {
     lsa->pages[i]->ref_count++;
   }
 
-  hadd(pthread_self(), lsa);
-  threads[num_tls] = pthread_self();
+  h_update(self_id, lsa);
+  threads[num_tls] = self_id;
   num_tls++;
 
   return 0;
