@@ -40,6 +40,7 @@ ENTRY e, *ep;
  * Now that data structures are defined, here's a good place to declare any
  * global variables.
  */
+
 pthread_t threads[MAX_THREAD_COUNT];
 
 int num_tls = 0;
@@ -77,13 +78,13 @@ static TLS *hfind(pthread_t tid) {
 static unsigned int get_page_size() {}
 
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
+  // Get base address of page where fault occurred
   unsigned int p_fault = ((unsigned int)si->si_addr) & ~(page_size - 1);
   for (int i = 0; i < num_tls; i++) {
     TLS *tls = hfind(threads[i]);
     for (int j = 0; j < tls->num_pages; j++) {
-      if (tls->pages[j]->address == p_fault) {
+      if (tls->pages[j]->address == p_fault)
         pthread_exit(NULL);
-      }
     }
   }
   signal(SIGSEGV, SIG_DFL);
@@ -102,17 +103,17 @@ static void tls_init() {
 }
 
 static void tls_protect(struct page *p) {
-  // if (mprotect(p->address, ???->size, ???) != 0) {
-  //   fprintf(stderr, "tls_protect: could not protect page\n");
-  //   exit(EXIT_FAILURE);
-  // }
+  if (mprotect((void *)p->address, page_size, PROT_NONE)) {
+    fprintf(stderr, "tls_protect: could not protect page\n");
+    exit(EXIT_FAILURE);
+  }
 }
 
 static void tls_unprotect(struct page *p) {
-  // if (mprotect(p->address, page_size, ???)) {
-  //   fprintf(stderr, "tls_unprotect: could not unprotect page\n");
-  //   exit(EXIT_FAILURE);
-  // }
+  if (mprotect((void *)p->address, page_size, PROT_READ | PROT_WRITE)) {
+    fprintf(stderr, "tls_unprotect: could not unprotect page\n");
+    exit(EXIT_FAILURE);
+  }
 }
 
 /*
@@ -162,9 +163,8 @@ int tls_destroy() {
       // TODO: handle shared page
     }
   }
-
   free(lsa);
-  ep->data = NULL;
+  lsa = NULL;
 
   threads[num_tls - 1] = 0;
   if (--num_tls == 0)
@@ -174,11 +174,62 @@ int tls_destroy() {
 }
 
 int tls_read(unsigned int offset, unsigned int length, char *buffer) {
+  TLS *lsa = hfind(pthread_self());
+  if (lsa == NULL || offset + length > lsa->size)
+    return -1;
+
+  for (int i = 0; i < lsa->num_pages; i++)
+    tls_unprotect(lsa->pages[i]);
+
+  unsigned int cnt, idx;
+  for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) {
+    struct page *p = lsa->pages[idx / page_size];
+    buffer[cnt] = *((char *)(p->address + idx % page_size));
+  }
+
+  for (int i = 0; i < lsa->num_pages; i++)
+    tls_protect(lsa->pages[i]);
+
   return 0;
 }
 
 int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
+  TLS *lsa = hfind(pthread_self());
+  if (lsa == NULL || offset + length > lsa->size)
+    return -1;
+
+  for (int i = 0; i < lsa->num_pages; i++)
+    tls_unprotect(lsa->pages[i]);
+
+  // TODO: perform write operation
+
+  for (int i = 0; i < lsa->num_pages; i++)
+    tls_protect(lsa->pages[i]);
+
   return 0;
 }
 
-int tls_clone(pthread_t tid) { return 0; }
+int tls_clone(pthread_t tid) {
+  if (hfind(pthread_self()))
+    return -1;
+
+  TLS *target = hfind(tid);
+  if (target == NULL)
+    return -1;
+
+  TLS *lsa = malloc(sizeof(TLS));
+  lsa->tid = pthread_self();
+  lsa->size = target->size;
+  lsa->num_pages = target->num_pages;
+  lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
+  for (int i = 0; i < lsa->num_pages; i++) {
+    lsa->pages[i] = target->pages[i];
+    lsa->pages[i]->ref_count++;
+  }
+
+  hadd(pthread_self(), lsa);
+  threads[num_tls] = pthread_self();
+  num_tls++;
+
+  return 0;
+}
