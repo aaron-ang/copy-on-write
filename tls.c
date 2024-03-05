@@ -1,4 +1,5 @@
 #include "tls.h"
+#include <assert.h>
 #include <search.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -72,16 +73,27 @@ static TLS *hfind(pthread_t tid) {
   e.key = (char *)tid;
   if ((ep = hsearch(e, FIND)) == NULL)
     return NULL;
-  return (TLS *)ep->data;
+  return ep->data;
 }
 
-static unsigned int get_page_size() {}
+static unsigned int get_page_size() {
+  // TODO: get page size
+  return 4096;
+}
 
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
   // Get base address of page where fault occurred
   unsigned int p_fault = ((unsigned int)si->si_addr) & ~(page_size - 1);
   for (int i = 0; i < num_tls; i++) {
+    pthread_t tid = threads[i];
+    if (tid == pthread_self() || tid == 0)
+      continue;
+
     TLS *tls = hfind(threads[i]);
+    if (tls == NULL)
+      continue;
+    assert(tls->tid == threads[i]);
+
     for (int j = 0; j < tls->num_pages; j++) {
       if (tls->pages[j]->address == p_fault)
         pthread_exit(NULL);
@@ -149,11 +161,12 @@ int tls_create(unsigned int size) {
 }
 
 int tls_destroy() {
-  e.key = (char *)pthread_self();
-  if ((ep = hsearch(e, FIND)) == NULL)
+  pthread_t tid = pthread_self();
+  TLS *lsa = hfind(tid);
+  if (lsa == NULL)
     return -1;
+  assert(lsa->tid == tid);
 
-  TLS *lsa = ep->data;
   for (int i = 0; i < lsa->num_pages; i++) {
     struct page *p = lsa->pages[i];
     if (--p->ref_count == 0) {
@@ -166,7 +179,12 @@ int tls_destroy() {
   free(lsa);
   lsa = NULL;
 
-  threads[num_tls - 1] = 0;
+  for (int i = 0; i < num_tls; i++) {
+    if (threads[i] == tid) {
+      threads[i] = 0;
+      break;
+    }
+  }
   if (--num_tls == 0)
     hdestroy();
 
@@ -177,6 +195,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
   TLS *lsa = hfind(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
+  assert(lsa->tid == pthread_self());
 
   for (int i = 0; i < lsa->num_pages; i++)
     tls_unprotect(lsa->pages[i]);
@@ -197,6 +216,7 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
   TLS *lsa = hfind(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
+  assert(lsa->tid == pthread_self());
 
   for (int i = 0; i < lsa->num_pages; i++)
     tls_unprotect(lsa->pages[i]);
@@ -216,6 +236,7 @@ int tls_clone(pthread_t tid) {
   TLS *target = hfind(tid);
   if (target == NULL)
     return -1;
+  assert(target->tid == tid);
 
   TLS *lsa = malloc(sizeof(TLS));
   lsa->tid = pthread_self();
