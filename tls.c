@@ -138,13 +138,13 @@ static void tls_unprotect(struct page *p) {
 }
 
 void register_tid(pthread_t tid) {
+  num_tls++;
   for (int i = 0; i < num_tls; i++) {
     if (threads[i] == 0) {
       threads[i] = tid;
       break;
     }
   }
-  num_tls++;
 }
 
 void omit_tid(pthread_t tid) {
