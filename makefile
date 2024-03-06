@@ -20,7 +20,7 @@ $(test_files): %: %.o tls.o
 
 # Run the test programs
 check: checkprogs
-    /bin/bash run_tests.sh $(test_files)
+	/bin/bash run_tests.sh $(test_files)
 
 # Build all of the test programs
 checkprogs: $(test_files)
