@@ -2,7 +2,9 @@ override CFLAGS := -Wall -Werror -std=gnu99 -pedantic -O0 -g -pthread $(CFLAGS)
 override LDLIBS := -pthread $(LDLIBS)
 
 TESTDIR=tests
-test_files=test_cow test_simple_create test_simple_write
+test_files=test_create test_read test_write \
+ test_write_read test_clone test_clone_read \
+ test_one_cow test_many_cow \
 
 test_files := $(addprefix $(TESTDIR)/,$(test_files))
 objects := $(addsuffix .o,$(test_files))
