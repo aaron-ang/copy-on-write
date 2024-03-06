@@ -43,9 +43,9 @@ ENTRY e, *ep;
  * global variables.
  */
 
-int num_tls = 0;
+int num_tls;
 
-bool hash_initialized = false;
+bool hash_initialized;
 
 unsigned int page_size;
 
@@ -248,8 +248,11 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
       copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
                                    MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
       copy->ref_count = 1;
+
       p->ref_count--;
+      tls_protect(p);
       lsa->pages[idx / page_size] = copy;
+      p = copy;
     }
     *((char *)(p->address + idx % page_size)) = buffer[cnt];
   }
