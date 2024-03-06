@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define NUM_THREADS 2
 #define TLS_SIZE 100
@@ -16,16 +17,18 @@ static void *cow(void *arg) {
     assert(tls_create(TLS_SIZE) == 0);
     strcpy(write_buffer, "hello");
     assert(tls_write(0, TLS_SIZE / 2, write_buffer) == 0);
+    sleep(1); // wait for second thread to clone and write to TLS
   } else {
+    sleep(1); // wait for first thread to create and write to TLS
     assert(tls_clone(threads[0]) == 0);
     strcpy(write_buffer, "world");
     assert(tls_write(0, TLS_SIZE / 2, write_buffer) == 0);
   }
 
   char *read_buffer = malloc(TLS_SIZE / 2);
-  tls_read(0, TLS_SIZE / 2, read_buffer);
+  assert(tls_read(0, TLS_SIZE / 2, read_buffer) == 0);
 
-  tls_destroy();
+  assert(tls_destroy() == 0);
   return read_buffer;
 }
 
