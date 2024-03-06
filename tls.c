@@ -124,14 +124,14 @@ static void tls_init() {
 }
 
 static void tls_protect(struct page *p) {
-  if (mprotect((void *)p->address, page_size, PROT_NONE)) {
+  if (mprotect((void *)(size_t)p->address, page_size, PROT_NONE)) {
     fprintf(stderr, "tls_protect: could not protect page\n");
     exit(EXIT_FAILURE);
   }
 }
 
 static void tls_unprotect(struct page *p) {
-  if (mprotect((void *)p->address, page_size, PROT_READ | PROT_WRITE)) {
+  if (mprotect((void *)(size_t)p->address, page_size, PROT_READ | PROT_WRITE)) {
     fprintf(stderr, "tls_unprotect: could not unprotect page\n");
     exit(EXIT_FAILURE);
   }
@@ -201,7 +201,7 @@ int tls_destroy() {
   for (int i = 0; i < lsa->num_pages; i++) {
     struct page *p = lsa->pages[i];
     if (--p->ref_count == 0) {
-      munmap((void *)p->address, page_size);
+      munmap((void *)(size_t)p->address, page_size);
       free(p);
     }
   }
@@ -225,7 +225,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
   unsigned int cnt, idx;
   for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) {
     struct page *p = lsa->pages[idx / page_size];
-    buffer[cnt] = *((char *)(p->address + idx % page_size));
+    buffer[cnt] = *((char *)(size_t)(p->address + idx % page_size));
   }
 
   for (int i = 0; i < lsa->num_pages; i++)
@@ -239,7 +239,7 @@ struct page *create_copy(struct page *p) {
   copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
                                MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   copy->ref_count = 1;
-  memcpy((void *)copy->address, (void *)p->address, page_size);
+  memcpy((void *)(size_t)copy->address, (void *)(size_t)p->address, page_size);
   p->ref_count--;
   tls_protect(p);
   return copy;
@@ -261,7 +261,7 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
     if (p->ref_count > 1) {
       p = lsa->pages[idx / page_size] = create_copy(p);
     }
-    *((char *)(p->address + idx % page_size)) = buffer[cnt];
+    *((char *)(size_t)(p->address + idx % page_size)) = buffer[cnt];
   }
 
   for (int i = 0; i < lsa->num_pages; i++)
