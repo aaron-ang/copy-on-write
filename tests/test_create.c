@@ -12,4 +12,5 @@ static void *create() {
 int main() {
   pthread_t thread;
   pthread_create(&thread, 0, &create, 0);
+  pthread_join(thread, NULL);
 }

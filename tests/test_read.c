@@ -16,4 +16,5 @@ static void *read(void *arg) {
 int main() {
   pthread_t thread;
   pthread_create(&thread, 0, &read, "hello");
+  pthread_join(thread, NULL);
 }

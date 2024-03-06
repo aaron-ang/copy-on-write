@@ -22,4 +22,6 @@ static void *clone() {
 int main() {
   pthread_create(&thread_create, 0, &create, 0);
   pthread_create(&thread_clone, 0, &clone, 0);
+  pthread_join(thread_clone, NULL);
+  pthread_join(thread_create, NULL);
 }

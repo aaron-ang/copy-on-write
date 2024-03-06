@@ -13,4 +13,5 @@ static void *write(void *arg) {
 int main() {
   pthread_t thread;
   pthread_create(&thread, 0, &write, "hello");
+  pthread_join(thread, NULL);
 }

@@ -36,4 +36,6 @@ static void *cow(void *arg) {
 int main() {
   pthread_create(&thread_create, 0, &create, 0);
   pthread_create(&thread_cow, 0, &cow, 0);
+  pthread_join(thread_cow, NULL);
+  pthread_join(thread_create, NULL);
 }

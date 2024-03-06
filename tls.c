@@ -161,6 +161,30 @@ void omit_tid(pthread_t tid) {
   }
 }
 
+static struct page *create_copy(struct page *p) {
+  struct page *copy = malloc(sizeof(struct page));
+  copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
+                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  copy->ref_count = 1;
+  memcpy((void *)(size_t)copy->address, (void *)(size_t)p->address, page_size);
+  p->ref_count--;
+  tls_protect(p);
+  return copy;
+}
+
+static TLS *clone(TLS *target) {
+  TLS *lsa = malloc(sizeof(TLS));
+  lsa->tid = pthread_self();
+  lsa->size = target->size;
+  lsa->num_pages = target->num_pages;
+  lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
+  for (int i = 0; i < lsa->num_pages; i++) {
+    lsa->pages[i] = target->pages[i];
+    lsa->pages[i]->ref_count++;
+  }
+  return lsa;
+}
+
 /*
  * Lastly, here is a good place to add your externally-callable functions.
  */
@@ -234,17 +258,6 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
   return 0;
 }
 
-struct page *create_copy(struct page *p) {
-  struct page *copy = malloc(sizeof(struct page));
-  copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
-                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-  copy->ref_count = 1;
-  memcpy((void *)(size_t)copy->address, (void *)(size_t)p->address, page_size);
-  p->ref_count--;
-  tls_protect(p);
-  return copy;
-}
-
 int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
   TLS *lsa = h_get(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
@@ -268,19 +281,6 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
     tls_protect(lsa->pages[i]);
 
   return 0;
-}
-
-TLS *clone(TLS *target) {
-  TLS *lsa = malloc(sizeof(TLS));
-  lsa->tid = pthread_self();
-  lsa->size = target->size;
-  lsa->num_pages = target->num_pages;
-  lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
-  for (int i = 0; i < lsa->num_pages; i++) {
-    lsa->pages[i] = target->pages[i];
-    lsa->pages[i]->ref_count++;
-  }
-  return lsa;
 }
 
 int tls_clone(pthread_t tid) {
