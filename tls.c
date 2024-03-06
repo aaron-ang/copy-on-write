@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 /*
  * This is a good place to define any data structures you will use in this file.
@@ -42,11 +43,13 @@ ENTRY e, *ep;
  * global variables.
  */
 
-pthread_t threads[MAX_THREAD_COUNT];
-
 int num_tls = 0;
 
+bool hash_initialized = false;
+
 unsigned int page_size;
+
+pthread_t threads[MAX_THREAD_COUNT];
 
 /*
  * With global data declared, this is a good point to start defining your
@@ -58,6 +61,7 @@ static void h_init() {
     fprintf(stderr, "h_init: could not create hash table\n");
     exit(EXIT_FAILURE);
   }
+  hash_initialized = true;
 }
 
 static void h_update(pthread_t tid, TLS *tls) {
@@ -76,24 +80,19 @@ static TLS *h_get(pthread_t tid) {
   return ep->data;
 }
 
-static unsigned int get_page_size() {
-  // TODO: get page size
-  return 4096;
-}
-
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
   // Get base address of page where fault occurred
-  unsigned int p_fault = ((unsigned int)si->si_addr) & ~(page_size - 1);
+  unsigned int p_fault = ((size_t)si->si_addr) & ~(page_size - 1);
   // Check if fault occurred in any of the threads' TLS
   for (int i = 0; i < num_tls; i++) {
     pthread_t tid = threads[i];
     if (tid == pthread_self() || tid == 0)
       continue;
 
-    TLS *tls = h_get(threads[i]);
+    TLS *tls = h_get(tid);
     if (tls == NULL)
       continue;
-    assert(tls->tid == threads[i]);
+    assert(tls->tid == tid);
 
     for (int j = 0; j < tls->num_pages; j++) {
       if (tls->pages[j]->address == p_fault)
@@ -107,11 +106,17 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
 }
 
 static void tls_init() {
-  struct sigaction sigact;
-  page_size = get_page_size();
+  if (hash_initialized == false)
+    h_init();
+
+  if (page_size == 0)
+    page_size = getpagesize();
+
+  struct sigaction sigact = {
+      .sa_sigaction = tls_handle_page_fault,
+      .sa_flags = SA_SIGINFO,
+  };
   sigemptyset(&sigact.sa_mask);
-  sigact.sa_flags = SA_SIGINFO;
-  sigact.sa_sigaction = tls_handle_page_fault;
   sigaction(SIGBUS, &sigact, NULL);
   sigaction(SIGSEGV, &sigact, NULL);
 }
@@ -130,35 +135,56 @@ static void tls_unprotect(struct page *p) {
   }
 }
 
+void register_tid(pthread_t tid) {
+  for (int i = 0; i < num_tls; i++) {
+    if (threads[i] == 0) {
+      threads[i] = tid;
+      break;
+    }
+  }
+  num_tls++;
+}
+
+void omit_tid(pthread_t tid) {
+  for (int i = 0; i < num_tls; i++) {
+    if (threads[i] == tid) {
+      threads[i] = 0;
+      break;
+    }
+  }
+  num_tls--;
+  if (num_tls == 0) {
+    hdestroy();
+    hash_initialized = false;
+  }
+}
+
 /*
  * Lastly, here is a good place to add your externally-callable functions.
  */
 
 int tls_create(unsigned int size) {
   if (num_tls == 0)
-    h_init();
+    tls_init();
 
   pthread_t tid = pthread_self();
   if (size == 0 || h_get(tid))
     return -1;
 
-  tls_init();
-
   TLS *lsa = malloc(sizeof(TLS));
   lsa->tid = tid;
   lsa->size = size;
-  lsa->num_pages = size / page_size;
+  lsa->num_pages = (size + page_size - 1) / page_size;
   lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
   for (int i = 0; i < lsa->num_pages; i++) {
     lsa->pages[i] = malloc(sizeof(struct page));
-    lsa->pages[i]->address = (unsigned int)mmap(
-        0, page_size, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    lsa->pages[i]->address = (size_t)mmap(0, page_size, PROT_NONE,
+                                          MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     lsa->pages[i]->ref_count = 1;
   }
 
   h_update(tid, lsa);
-  threads[num_tls] = tid;
-  num_tls++;
+  register_tid(tid);
   return 0;
 }
 
@@ -180,16 +206,7 @@ int tls_destroy() {
   }
   free(lsa);
   lsa = NULL;
-
-  for (int i = 0; i < num_tls; i++) {
-    if (threads[i] == tid) {
-      threads[i] = 0;
-      break;
-    }
-  }
-  if (--num_tls == 0)
-    hdestroy();
-
+  omit_tid(tid);
   return 0;
 }
 
@@ -223,7 +240,19 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
   for (int i = 0; i < lsa->num_pages; i++)
     tls_unprotect(lsa->pages[i]);
 
-  // TODO: perform write operation
+  unsigned int cnt, idx;
+  for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) {
+    struct page *p = lsa->pages[idx / page_size];
+    if (p->ref_count > 1) {
+      struct page *copy = malloc(sizeof(struct page));
+      copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
+                                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+      copy->ref_count = 1;
+      p->ref_count--;
+      lsa->pages[idx / page_size] = copy;
+    }
+    *((char *)(p->address + idx % page_size)) = buffer[cnt];
+  }
 
   for (int i = 0; i < lsa->num_pages; i++)
     tls_protect(lsa->pages[i]);
@@ -252,8 +281,6 @@ int tls_clone(pthread_t tid) {
   }
 
   h_update(self_id, lsa);
-  threads[num_tls] = self_id;
-  num_tls++;
-
+  register_tid(self_id);
   return 0;
 }
