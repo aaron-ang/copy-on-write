@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -92,6 +93,7 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
     TLS *tls = h_get(tid);
     if (tls == NULL)
       continue;
+
     assert(tls->tid == tid);
 
     for (int j = 0; j < tls->num_pages; j++) {
@@ -193,6 +195,7 @@ int tls_destroy() {
   TLS *lsa = h_get(tid);
   if (lsa == NULL)
     return -1;
+
   assert(lsa->tid == tid);
 
   for (int i = 0; i < lsa->num_pages; i++) {
@@ -200,10 +203,9 @@ int tls_destroy() {
     if (--p->ref_count == 0) {
       munmap((void *)p->address, page_size);
       free(p);
-    } else {
-      // TODO: handle shared page
     }
   }
+  free(lsa->pages);
   free(lsa);
   lsa = NULL;
   omit_tid(tid);
@@ -214,6 +216,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
   TLS *lsa = h_get(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
+
   assert(lsa->tid == pthread_self());
 
   for (int i = 0; i < lsa->num_pages; i++)
@@ -231,10 +234,22 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
   return 0;
 }
 
+struct page *create_copy(struct page *p) {
+  struct page *copy = malloc(sizeof(struct page));
+  copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
+                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  copy->ref_count = 1;
+  memcpy((void *)copy->address, (void *)p->address, page_size);
+  p->ref_count--;
+  tls_protect(p);
+  return copy;
+}
+
 int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
   TLS *lsa = h_get(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
+
   assert(lsa->tid == pthread_self());
 
   for (int i = 0; i < lsa->num_pages; i++)
@@ -244,15 +259,7 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
   for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) {
     struct page *p = lsa->pages[idx / page_size];
     if (p->ref_count > 1) {
-      struct page *copy = malloc(sizeof(struct page));
-      copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
-                                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-      copy->ref_count = 1;
-
-      p->ref_count--;
-      tls_protect(p);
-      lsa->pages[idx / page_size] = copy;
-      p = copy;
+      p = lsa->pages[idx / page_size] = create_copy(p);
     }
     *((char *)(p->address + idx % page_size)) = buffer[cnt];
   }
@@ -263,6 +270,19 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
   return 0;
 }
 
+TLS *clone(TLS *target) {
+  TLS *lsa = malloc(sizeof(TLS));
+  lsa->tid = pthread_self();
+  lsa->size = target->size;
+  lsa->num_pages = target->num_pages;
+  lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
+  for (int i = 0; i < lsa->num_pages; i++) {
+    lsa->pages[i] = target->pages[i];
+    lsa->pages[i]->ref_count++;
+  }
+  return lsa;
+}
+
 int tls_clone(pthread_t tid) {
   pthread_t self_id = pthread_self();
   if (h_get(self_id))
@@ -271,18 +291,10 @@ int tls_clone(pthread_t tid) {
   TLS *target = h_get(tid);
   if (target == NULL)
     return -1;
+
   assert(target->tid == tid);
 
-  TLS *lsa = malloc(sizeof(TLS));
-  lsa->tid = self_id;
-  lsa->size = target->size;
-  lsa->num_pages = target->num_pages;
-  lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
-  for (int i = 0; i < lsa->num_pages; i++) {
-    lsa->pages[i] = target->pages[i];
-    lsa->pages[i]->ref_count++;
-  }
-
+  TLS *lsa = clone(target);
   h_update(self_id, lsa);
   register_tid(self_id);
   return 0;
