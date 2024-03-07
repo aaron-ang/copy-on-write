@@ -52,6 +52,8 @@ unsigned int page_size;
 
 pthread_t threads[MAX_THREAD_COUNT];
 
+char key[sizeof(pthread_t)]; // to convert pthread_t to string for hash table
+
 /*
  * With global data declared, this is a good point to start defining your
  * static helper functions.
@@ -66,7 +68,8 @@ static void h_init() {
 }
 
 static void h_update(pthread_t tid, TLS *tls) {
-  e.key = (char *)tid;
+  sprintf(key, "%lu", (size_t)tid);
+  e.key = key;
   e.data = tls;
   if (hsearch(e, ENTER) == NULL) {
     fprintf(stderr, "hadd: entry failed\n");
@@ -75,7 +78,8 @@ static void h_update(pthread_t tid, TLS *tls) {
 }
 
 static TLS *h_get(pthread_t tid) {
-  e.key = (char *)tid;
+  sprintf(key, "%lu", (size_t)tid);
+  e.key = key;
   if ((ep = hsearch(e, FIND)) == NULL)
     return NULL;
   return ep->data;
