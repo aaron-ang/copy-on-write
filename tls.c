@@ -1,6 +1,5 @@
 #include "tls.h"
 #include <assert.h>
-#include <search.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -37,52 +36,45 @@ struct page {
   int ref_count;  /* counter for shared pages */
 };
 
-ENTRY e, *ep;
+struct tid_tls_pair {
+  pthread_t tid;
+  TLS *tls;
+};
 
 /*
  * Now that data structures are defined, here's a good place to declare any
  * global variables.
  */
 
-int num_tls;
+static int num_tls;
 
-bool hash_initialized;
+static unsigned int page_size;
 
-unsigned int page_size;
-
-pthread_t threads[MAX_THREAD_COUNT];
-
-char key[sizeof(pthread_t)]; // to convert pthread_t to string for hash table
+static struct tid_tls_pair tid_tls_pairs[MAX_THREAD_COUNT];
 
 /*
  * With global data declared, this is a good point to start defining your
  * static helper functions.
  */
 
-static void h_init() {
-  if (hcreate(MAX_THREAD_COUNT) == 0) {
-    fprintf(stderr, "h_init: could not create hash table\n");
-    exit(EXIT_FAILURE);
-  }
-  hash_initialized = true;
-}
-
-static void h_update(pthread_t tid, TLS *tls) {
-  sprintf(key, "%lu", (size_t)tid);
-  e.key = key;
-  e.data = tls;
-  if (hsearch(e, ENTER) == NULL) {
-    fprintf(stderr, "hadd: entry failed\n");
-    exit(EXIT_FAILURE);
+static void register_tid_tls_pair(pthread_t tid, TLS *tls) {
+  num_tls++;
+  for (int i = 0; i < num_tls; i++) {
+    if (tid_tls_pairs[i].tid == 0) {
+      tid_tls_pairs[i].tid = tid;
+      tid_tls_pairs[i].tls = tls;
+      return;
+    }
   }
 }
 
-static TLS *h_get(pthread_t tid) {
-  sprintf(key, "%lu", (size_t)tid);
-  e.key = key;
-  if ((ep = hsearch(e, FIND)) == NULL)
-    return NULL;
-  return ep->data;
+static TLS *get_tls(pthread_t tid) {
+  for (int i = 0; i < MAX_THREAD_COUNT; i++) {
+    if (tid_tls_pairs[i].tid == tid) {
+      return tid_tls_pairs[i].tls;
+    }
+  }
+  return NULL;
 }
 
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
@@ -90,14 +82,11 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
   unsigned int p_fault = ((size_t)si->si_addr) & ~(page_size - 1);
   // Check if fault occurred in any of the threads' TLS
   for (int i = 0; i < num_tls; i++) {
-    pthread_t tid = threads[i];
+    pthread_t tid = tid_tls_pairs[i].tid;
     if (tid == pthread_self() || tid == 0)
       continue;
 
-    TLS *tls = h_get(tid);
-    if (tls == NULL)
-      continue;
-
+    TLS *tls = tid_tls_pairs[i].tls;
     assert(tls->tid == tid);
 
     for (int j = 0; j < tls->num_pages; j++) {
@@ -112,9 +101,6 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
 }
 
 static void tls_init() {
-  if (hash_initialized == false)
-    h_init();
-
   if (page_size == 0)
     page_size = getpagesize();
 
@@ -138,30 +124,6 @@ static void tls_unprotect(struct page *p) {
   if (mprotect((void *)p->address, page_size, PROT_READ | PROT_WRITE)) {
     fprintf(stderr, "tls_unprotect: could not unprotect page\n");
     exit(EXIT_FAILURE);
-  }
-}
-
-void register_tid(pthread_t tid) {
-  num_tls++;
-  for (int i = 0; i < num_tls; i++) {
-    if (threads[i] == 0) {
-      threads[i] = tid;
-      break;
-    }
-  }
-}
-
-void omit_tid(pthread_t tid) {
-  for (int i = 0; i < num_tls; i++) {
-    if (threads[i] == tid) {
-      threads[i] = 0;
-      break;
-    }
-  }
-  num_tls--;
-  if (num_tls == 0) {
-    hdestroy();
-    hash_initialized = false;
   }
 }
 
@@ -198,7 +160,7 @@ int tls_create(unsigned int size) {
     tls_init();
 
   pthread_t tid = pthread_self();
-  if (size == 0 || h_get(tid))
+  if (size == 0 || get_tls(tid))
     return -1;
 
   TLS *lsa = malloc(sizeof(TLS));
@@ -212,18 +174,23 @@ int tls_create(unsigned int size) {
                                           MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     lsa->pages[i]->ref_count = 1;
   }
-
-  h_update(tid, lsa);
-  register_tid(tid);
+  register_tid_tls_pair(tid, lsa);
   return 0;
 }
 
 int tls_destroy() {
   pthread_t tid = pthread_self();
-  TLS *lsa = h_get(tid);
-  if (lsa == NULL)
+  struct tid_tls_pair *pair;
+  for (int i = 0; i < MAX_THREAD_COUNT; i++) {
+    if (tid_tls_pairs[i].tid == tid) {
+      pair = &tid_tls_pairs[i];
+      break;
+    }
+  }
+  if (pair == NULL)
     return -1;
 
+  TLS *lsa = pair->tls;
   assert(lsa->tid == tid);
 
   for (int i = 0; i < lsa->num_pages; i++) {
@@ -236,12 +203,13 @@ int tls_destroy() {
   free(lsa->pages);
   free(lsa);
   lsa = NULL;
-  omit_tid(tid);
+  pair->tid = 0;
+  num_tls--;
   return 0;
 }
 
 int tls_read(unsigned int offset, unsigned int length, char *buffer) {
-  TLS *lsa = h_get(pthread_self());
+  TLS *lsa = get_tls(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
 
@@ -263,7 +231,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 }
 
 int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
-  TLS *lsa = h_get(pthread_self());
+  TLS *lsa = get_tls(pthread_self());
   if (lsa == NULL || offset + length > lsa->size)
     return -1;
 
@@ -289,20 +257,16 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
 
 int tls_clone(pthread_t tid) {
   pthread_t self_id = pthread_self();
-  if (h_get(self_id)) {
-    fprintf(stderr, "tls_clone: TLS already exists for this thread\n");
+  if (get_tls(self_id))
     return -1;
-  }
 
-  TLS *target = h_get(tid);
-  if (target == NULL) {
-    fprintf(stderr, "tls_clone: No TLS exists for the target thread\n");
-  }
+  TLS *target = get_tls(tid);
+  if (target == NULL)
+    return -1;
 
   assert(target->tid == tid);
 
   TLS *lsa = clone(target);
-  h_update(self_id, lsa);
-  register_tid(self_id);
+  register_tid_tls_pair(self_id, lsa);
   return 0;
 }
