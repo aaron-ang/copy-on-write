@@ -180,7 +180,7 @@ int tls_create(unsigned int size) {
 
 int tls_destroy() {
   pthread_t tid = pthread_self();
-  struct tid_tls_pair *pair;
+  struct tid_tls_pair *pair = NULL;
   for (int i = 0; i < MAX_THREAD_COUNT; i++) {
     if (tid_tls_pairs[i].tid == tid) {
       pair = &tid_tls_pairs[i];
@@ -202,8 +202,8 @@ int tls_destroy() {
   }
   free(lsa->pages);
   free(lsa);
-  lsa = NULL;
   pair->tid = 0;
+  pair->tls = NULL;
   num_tls--;
   return 0;
 }
