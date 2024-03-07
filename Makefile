@@ -13,11 +13,6 @@ tls.o: tls.c
 
 all: check
 
-# rules to build each of the tests
-$(objects): %.o: %.c
-
-$(test_files): %: %.o tls.o
-
 .PHONY: clean check checkprogs
 
 # Run the test programs
@@ -26,6 +21,10 @@ check: checkprogs
 
 # Build all of the test programs
 checkprogs: $(test_files)
+
+$(test_files): %: %.o tls.o
+
+$(objects): %.o: %.c
 
 clean:
 	rm -f *.o *~ $(TESTDIR)/*.o $(test_files)
