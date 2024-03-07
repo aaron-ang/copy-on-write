@@ -289,12 +289,15 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
 
 int tls_clone(pthread_t tid) {
   pthread_t self_id = pthread_self();
-  if (h_get(self_id))
+  if (h_get(self_id)) {
+    fprintf(stderr, "tls_clone: TLS already exists for this thread\n");
     return -1;
+  }
 
   TLS *target = h_get(tid);
-  if (target == NULL)
-    return -1;
+  if (target == NULL) {
+    fprintf(stderr, "tls_clone: No TLS exists for the target thread\n");
+  }
 
   assert(target->tid == tid);
 
