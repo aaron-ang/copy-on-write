@@ -79,16 +79,14 @@ static TLS *get_tls(pthread_t tid) {
 
 static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
   // Get base address of page where fault occurred
-  unsigned int p_fault = ((size_t)si->si_addr) & ~(page_size - 1);
+  size_t p_fault = (size_t)(si->si_addr) & ~(page_size - 1);
   // Check if fault occurred in any of the threads' TLS
   for (int i = 0; i < num_tls; i++) {
-    pthread_t tid = tid_tls_pairs[i].tid;
-    if (tid == pthread_self() || tid == 0)
+    struct tid_tls_pair pair = tid_tls_pairs[i];
+    TLS *tls = pair.tls;
+    if (tls == NULL)
       continue;
-
-    TLS *tls = tid_tls_pairs[i].tls;
-    assert(tls->tid == tid);
-
+    assert(pair.tid == tls->tid);
     for (int j = 0; j < tls->num_pages; j++) {
       if (tls->pages[j]->address == p_fault)
         pthread_exit(NULL);
@@ -129,6 +127,10 @@ static void tls_unprotect(struct page *p) {
 
 static struct page *create_copy(struct page *p) {
   struct page *copy = malloc(sizeof(struct page));
+  if (copy == NULL) {
+    fprintf(stderr, "create_copy: could not allocate memory for page\n");
+    exit(EXIT_FAILURE);
+  }
   copy->address = (size_t)mmap(0, page_size, PROT_WRITE,
                                MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   copy->ref_count = 1;
@@ -140,10 +142,18 @@ static struct page *create_copy(struct page *p) {
 
 static TLS *clone(TLS *target) {
   TLS *lsa = malloc(sizeof(TLS));
+  if (lsa == NULL) {
+    fprintf(stderr, "clone: could not allocate memory for TLS\n");
+    exit(EXIT_FAILURE);
+  }
   lsa->tid = pthread_self();
   lsa->size = target->size;
   lsa->num_pages = target->num_pages;
   lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
+  if (lsa->pages == NULL) {
+    fprintf(stderr, "clone: could not allocate memory for pages\n");
+    exit(EXIT_FAILURE);
+  }
   for (int i = 0; i < lsa->num_pages; i++) {
     lsa->pages[i] = target->pages[i];
     lsa->pages[i]->ref_count++;
@@ -164,12 +174,26 @@ int tls_create(unsigned int size) {
     return -1;
 
   TLS *lsa = malloc(sizeof(TLS));
+  if (lsa == NULL)
+    return -1;
+
   lsa->tid = tid;
   lsa->size = size;
   lsa->num_pages = (size + page_size - 1) / page_size;
   lsa->pages = calloc(lsa->num_pages, sizeof(struct page *));
+  if (lsa->pages == NULL) {
+    free(lsa);
+    return -1;
+  }
   for (int i = 0; i < lsa->num_pages; i++) {
     lsa->pages[i] = malloc(sizeof(struct page));
+    if (lsa->pages[i] == NULL) {
+      for (int j = 0; j < i; j++)
+        free(lsa->pages[j]);
+      free(lsa->pages);
+      free(lsa);
+      return -1;
+    }
     lsa->pages[i]->address = (size_t)mmap(0, page_size, PROT_NONE,
                                           MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     lsa->pages[i]->ref_count = 1;

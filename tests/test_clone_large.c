@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#define TLS_SIZE 4096 * 8
+#define TLS_SIZE 4096 * 24
 #define CLONES 128 - 1
 
 pthread_t thread_create;
