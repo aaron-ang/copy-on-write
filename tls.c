@@ -239,17 +239,21 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
 
   assert(lsa->tid == pthread_self());
 
-  for (int i = 0; i < lsa->num_pages; i++)
-    tls_unprotect(lsa->pages[i]);
-
-  unsigned int cnt, idx;
-  for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) {
-    struct page *p = lsa->pages[idx / page_size];
-    buffer[cnt] = *((char *)(p->address + idx % page_size));
+  unsigned int bytes_read = 0;
+  while (bytes_read < length) {
+    struct page *p = lsa->pages[offset / page_size];
+    tls_unprotect(p);
+    unsigned int page_offset = offset % page_size;
+    unsigned int page_remaining = page_size - page_offset;
+    unsigned int remaining_bytes = length - bytes_read;
+    unsigned int bytes_to_read =
+        (page_remaining < remaining_bytes) ? page_remaining : remaining_bytes;
+    memcpy(buffer + bytes_read, (void *)(p->address + page_offset),
+           bytes_to_read);
+    tls_protect(p);
+    bytes_read += bytes_to_read;
+    offset += bytes_to_read;
   }
-
-  for (int i = 0; i < lsa->num_pages; i++)
-    tls_protect(lsa->pages[i]);
 
   return 0;
 }
@@ -261,20 +265,24 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
 
   assert(lsa->tid == pthread_self());
 
-  for (int i = 0; i < lsa->num_pages; i++)
-    tls_unprotect(lsa->pages[i]);
-
-  unsigned int cnt, idx;
-  for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) {
-    struct page *p = lsa->pages[idx / page_size];
+  unsigned int bytes_written = 0;
+  while (bytes_written < length) {
+    struct page *p = lsa->pages[offset / page_size];
+    tls_unprotect(p);
     if (p->ref_count > 1) {
-      p = lsa->pages[idx / page_size] = create_copy(p);
+      p = lsa->pages[offset / page_size] = create_copy(p);
     }
-    *((char *)(p->address + idx % page_size)) = buffer[cnt];
+    unsigned int page_offset = offset % page_size;
+    unsigned int page_remaining = page_size - page_offset;
+    unsigned int remaining_bytes = length - bytes_written;
+    unsigned int bytes_to_write =
+        (page_remaining < remaining_bytes) ? page_remaining : remaining_bytes;
+    memcpy((void *)(p->address + page_offset), buffer + bytes_written,
+           bytes_to_write);
+    tls_protect(p);
+    bytes_written += bytes_to_write;
+    offset += bytes_to_write;
   }
-
-  for (int i = 0; i < lsa->num_pages; i++)
-    tls_protect(lsa->pages[i]);
 
   return 0;
 }
