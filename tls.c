@@ -81,7 +81,7 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
   // Get base address of page where fault occurred
   size_t p_fault = (size_t)(si->si_addr) & ~(page_size - 1);
   // Check if fault occurred in any of the threads' TLS
-  for (int i = 0; i < num_tls; i++) {
+  for (int i = 0; i < MAX_THREAD_COUNT; i++) {
     struct tid_tls_pair pair = tid_tls_pairs[i];
     TLS *tls = pair.tls;
     if (tls == NULL)
