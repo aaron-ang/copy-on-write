@@ -46,8 +46,6 @@ struct tid_tls_pair {
  * global variables.
  */
 
-static int num_tls;
-
 static unsigned int page_size;
 
 static struct tid_tls_pair tid_tls_pairs[MAX_THREAD_COUNT];
@@ -58,14 +56,15 @@ static struct tid_tls_pair tid_tls_pairs[MAX_THREAD_COUNT];
  */
 
 static void register_tid_tls_pair(pthread_t tid, TLS *tls) {
-  num_tls++;
-  for (int i = 0; i < num_tls; i++) {
+  for (int i = 0; i < MAX_THREAD_COUNT; i++) {
     if (tid_tls_pairs[i].tid == 0) {
       tid_tls_pairs[i].tid = tid;
       tid_tls_pairs[i].tls = tls;
       return;
     }
   }
+  fprintf(stderr, "register_tid_tls_pair: could not register pair\n");
+  exit(EXIT_FAILURE);
 }
 
 static TLS *get_tls(pthread_t tid) {
@@ -166,8 +165,11 @@ static TLS *clone(TLS *target) {
  */
 
 int tls_create(unsigned int size) {
-  if (num_tls == 0)
+  static bool initialized = false;
+  if (initialized == false) {
     tls_init();
+    initialized = true;
+  }
 
   pthread_t tid = pthread_self();
   if (size == 0 || get_tls(tid))
@@ -228,7 +230,6 @@ int tls_destroy() {
   free(lsa);
   pair->tid = 0;
   pair->tls = NULL;
-  num_tls--;
   return 0;
 }
 
@@ -254,7 +255,6 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer) {
     bytes_read += bytes_to_read;
     offset += bytes_to_read;
   }
-
   return 0;
 }
 
@@ -283,7 +283,6 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer) {
     bytes_written += bytes_to_write;
     offset += bytes_to_write;
   }
-
   return 0;
 }
 
