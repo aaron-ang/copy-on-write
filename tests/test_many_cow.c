@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TLS_SIZE 5
+#define TLS_SIZE 1024
 #define NUM_THREADS 4
 
 pthread_t threads[NUM_THREADS];

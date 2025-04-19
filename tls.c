@@ -99,7 +99,7 @@ static void tls_handle_page_fault(int sig, siginfo_t *si, void *context) {
 
 static void tls_init() {
   if (page_size == 0)
-    page_size = getpagesize();
+    page_size = sysconf(_SC_PAGESIZE);
 
   struct sigaction sigact = {
       .sa_sigaction = tls_handle_page_fault,

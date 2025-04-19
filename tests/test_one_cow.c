@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TLS_SIZE 5
+#define TLS_SIZE 1024
 
 pthread_t thread_create, thread_cow;
 char write_buffer[TLS_SIZE], read_buffer[TLS_SIZE];

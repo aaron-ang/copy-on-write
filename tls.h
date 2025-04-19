@@ -1,3 +1,7 @@
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 600
+#endif
+
 #ifndef TLS_H_
 #define TLS_H_
 #include <pthread.h>
